@@ -1,0 +1,61 @@
+name: 成績報表建置與發布
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取出程式碼
+        uses: actions/checkout@v7
+      - name: 準備 Python 驗證工具
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: 建置報表 Image
+        run: docker build -t python-report:ci .
+      - name: 執行並驗證報表
+        run: python verify.py python-report:ci
+      - name: 保存通過測試的 Image
+        if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+        run: docker save -o /tmp/report-image.tar python-report:ci
+      - name: 傳遞測試產物
+        if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-image
+          path: /tmp/report-image.tar
+          retention-days: 1
+
+  publish:
+    needs: test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下載通過測試的 Image
+        uses: actions/download-artifact@v4
+        with:
+          name: tested-image
+          path: /tmp
+      - name: 載入 Image
+        run: docker load -i /tmp/report-image.tar
+      - name: 登入 Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: 標記並發布版本
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          IMAGE="$DOCKERHUB_USERNAME/python-report:$VERSION"
+          docker tag python-report:ci "$IMAGE"
+          docker push "$IMAGE"
